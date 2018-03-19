@@ -188,8 +188,8 @@ impl From<gid_t> for Group {
 /// Daemonization options.
 ///
 /// Fork the process in the background, disassociate from its process group and the control terminal.
-/// Change umask value to `0o027`, redirect all standard streams to `/dev/null`. Change working
-/// directory to `/` or provided value.
+/// Change umask value to `0o027`, redirect all standard streams to `/dev/null`
+/// or files in the redirect dir. Change working directory to `/` or provided value.
 ///
 /// Optionally:
 ///
@@ -207,6 +207,7 @@ pub struct Daemonize<T> {
     group: Option<Group>,
     umask: mode_t,
     privileged_action: Box<Fn() -> T>,
+    redirect_dir: Option<PathBuf>,
 }
 
 impl<T> fmt::Debug for Daemonize<T> {
@@ -218,6 +219,7 @@ impl<T> fmt::Debug for Daemonize<T> {
             .field("user", &self.user)
             .field("group", &self.group)
             .field("umask", &self.umask)
+            .field( "redirect_dir", &self.redirect_dir)
             .finish()
     }
 }
@@ -233,6 +235,7 @@ impl Daemonize<()> {
             group: None,
             umask: 0o027,
             privileged_action: Box::new(|| ()),
+            redirect_dir: None,
         }
     }
 }
@@ -275,6 +278,11 @@ impl<T> Daemonize<T> {
         self
     }
 
+    pub fn redirect_dir(mut self, redirect_dir: Option<PathBuf>) -> Self {
+        self.redirect_dir = redirect_dir;
+        self
+    }
+
     /// Execute `action` just before dropping privileges. Most common usecase is to open listening socket.
     /// Result of `action` execution will be returned by `start` method.
     pub fn privileged_action<N, F: Fn() -> N + Sized + 'static>(self, action: F) -> Daemonize<N> {
@@ -307,7 +315,7 @@ impl<T> Daemonize<T> {
 
             try!(perform_fork());
 
-            try!(redirect_standard_streams());
+            try!(redirect_standard_streams(self.redirect_dir));
 
             let uid = maptry!(self.user, get_user);
             let gid = maptry!(self.group, get_group);
@@ -352,7 +360,7 @@ unsafe fn set_sid() -> Result<()> {
     tryret!(setsid(), Ok(()), DaemonizeError::DetachSession)
 }
 
-unsafe fn redirect_standard_streams() -> Result<()> {
+unsafe fn redirect_standard_streams(dir: Option<PathBuf>) -> Result<()> {
     macro_rules! for_every_stream {
         ($expr:expr) => (
             for stream in &[libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO] {
@@ -362,14 +370,34 @@ unsafe fn redirect_standard_streams() -> Result<()> {
     }
     for_every_stream!(close);
 
-    let devnull_file = fopen(transmute(b"/dev/null\0"), transmute(b"w+\0"));
-    if devnull_file.is_null() {
-        return Err(DaemonizeError::RedirectStreams(errno()))
-    };
+    match dir {
+        None => {
+            let devnull_file = fopen(transmute(b"/dev/null\0"), transmute(b"w+\0"));
+            if devnull_file.is_null() {
+                return Err(DaemonizeError::RedirectStreams(errno()))
+            };
 
-    let devnull_fd = fileno(devnull_file);
-    for_every_stream!(|stream| dup2(devnull_fd, stream));
-    tryret!(close(devnull_fd), (), DaemonizeError::RedirectStreams);
+            let devnull_fd = fileno(devnull_file);
+            for_every_stream!(|stream| dup2(devnull_fd, stream));
+            tryret!(close(devnull_fd), (), DaemonizeError::RedirectStreams);
+
+        },
+        Some(dir) => {
+            let pairs = &[(libc::STDOUT_FILENO, "server.out"), (libc::STDERR_FILENO, "server.err")];
+            for &(stream, filename) in pairs {
+                let mut full_path = dir.clone();
+                full_path.push(filename);
+                let full_path_c = pathbuf_into_cstring(full_path)?;
+                let file = fopen( full_path_c.as_ptr(), transmute(b"w+\0"));
+                if file.is_null() {
+                    return Err(DaemonizeError::RedirectStreams(errno()))
+                };
+                let fd = fileno(file);
+                dup2(fileno(file), stream);
+                close(fd);
+            }
+        }
+    }
 
     Ok(())
 }
