@@ -53,7 +53,7 @@ use std::path::{Path, PathBuf};
 use std::process::{exit};
 
 pub use libc::{uid_t, gid_t, mode_t};
-use libc::{LOCK_EX, LOCK_NB, c_int, fopen, write, close, fileno, fork, getpid, setsid, setuid, setgid, dup2, umask};
+use libc::{LOCK_EX, LOCK_NB, c_int, fopen, write, close, fileno, fork, getpid, setsid, setuid, setgid, dup2, umask, rewind};
 
 use self::ffi::{errno, flock, get_gid_by_name, get_uid_by_name};
 
@@ -439,10 +439,11 @@ unsafe fn set_user(user: uid_t) -> Result<()> {
 unsafe fn create_pid_file(path: PathBuf) -> Result<libc::c_int> {
     let path_c = try!(pathbuf_into_cstring(path));
 
-    let f = fopen(path_c.as_ptr(), b"rw" as *const u8 as *const libc::c_char);
+    let f = fopen(path_c.as_ptr(), b"a+" as *const u8 as *const libc::c_char);
     if f.is_null() {
         return Err(DaemonizeError::OpenPidfile)
     }
+    rewind(f);
 
     let fd = fileno(f);
     tryret!(flock(fd, LOCK_EX | LOCK_NB), Ok(fd), DaemonizeError::LockPidfile)
