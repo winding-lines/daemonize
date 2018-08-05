@@ -53,7 +53,7 @@ use std::path::{Path, PathBuf};
 use std::process::{exit};
 
 pub use libc::{uid_t, gid_t, mode_t};
-use libc::{LOCK_EX, LOCK_NB, c_int, fopen, write, close, fileno, fork, getpid, setsid, setuid, setgid, dup2, umask, rewind};
+use libc::{LOCK_EX, LOCK_NB, c_int, fopen, write, close, fileno, fork, getpid, setsid, setuid, setgid, dup2, umask, ftruncate};
 
 use self::ffi::{errno, flock, get_gid_by_name, get_uid_by_name};
 
@@ -306,6 +306,9 @@ impl<T> Daemonize<T> {
 
         unsafe {
             let pid_file_fd = maptry!(self.pid_file.clone(), create_pid_file);
+            if let Some(fd) = pid_file_fd {
+                ftruncate(fd, 0);
+            }
 
             try!(perform_fork());
 
@@ -443,7 +446,6 @@ unsafe fn create_pid_file(path: PathBuf) -> Result<libc::c_int> {
     if f.is_null() {
         return Err(DaemonizeError::OpenPidfile)
     }
-    rewind(f);
 
     let fd = fileno(f);
     tryret!(flock(fd, LOCK_EX | LOCK_NB), Ok(fd), DaemonizeError::LockPidfile)
