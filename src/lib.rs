@@ -439,7 +439,7 @@ unsafe fn set_user(user: uid_t) -> Result<()> {
 unsafe fn create_pid_file(path: PathBuf) -> Result<libc::c_int> {
     let path_c = try!(pathbuf_into_cstring(path));
 
-    let f = fopen(path_c.as_ptr(), b"w" as *const u8 as *const libc::c_char);
+    let f = fopen(path_c.as_ptr(), b"rw" as *const u8 as *const libc::c_char);
     if f.is_null() {
         return Err(DaemonizeError::OpenPidfile)
     }
